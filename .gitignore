@@ -2,7 +2,7 @@
 
 # interpreter bytecode
 __pycache__/
-
+output/
 # experiment results
 runs/
 videos/

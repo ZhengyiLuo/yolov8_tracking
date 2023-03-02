@@ -2,11 +2,13 @@ import argparse
 import cv2
 import os
 # limit the number of cpus used by high performance libraries
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+NUM_FRAMS = 5
+print(f"Using {NUM_FRAMS}")
+os.environ["OMP_NUM_THREADS"] = f"{NUM_FRAMS}"
+os.environ["OPENBLAS_NUM_THREADS"] = f"{NUM_FRAMS}"
+os.environ["MKL_NUM_THREADS"] = f"{NUM_FRAMS}"
+os.environ["VECLIB_MAXIMUM_THREADS"] = f"{NUM_FRAMS}"
+os.environ["NUMEXPR_NUM_THREADS"] = f"{NUM_FRAMS}"
 
 import sys
 import platform
@@ -40,7 +42,10 @@ from yolov8.ultralytics.yolo.utils.ops import Profile, non_max_suppression, scal
 from yolov8.ultralytics.yolo.utils.plotting import Annotator, colors, save_one_box
 
 from trackers.multi_tracker_zoo import create_tracker
-import time
+import scipy.ndimage.filters as filters
+from collections import defaultdict
+from collections import deque
+from ultralytics.yolo.data.augment import LetterBox
 
 @torch.no_grad()
 def run(
@@ -50,7 +55,7 @@ def run(
         tracking_method='strongsort',
         tracking_config=None,
         imgsz=(640, 640),  # inference size (height, width)
-        conf_thres=0.25,  # confidence threshold
+        conf_thres=0.5,  # confidence threshold
         iou_thres=0.45,  # NMS IOU threshold
         max_det=1000,  # maximum detections per image
         device='',  # cuda device, i.e. 0 or 0,1,2,3 or cpu
@@ -77,6 +82,8 @@ def run(
         dnn=False,  # use OpenCV DNN for ONNX inference
         vid_stride=1,  # video frame-rate stride
         retina_masks=False,
+        return_dict = {}
+        
 ):
     
     ###### Filtering
@@ -121,7 +128,8 @@ def run(
             stride=stride,
             auto=pt,
             transforms=getattr(model.model, 'transforms', None),
-            vid_stride=vid_stride
+            vid_stride=vid_stride,
+            return_dict = return_dict
         )
         bs = len(dataset)
     else:
@@ -135,7 +143,7 @@ def run(
         )
     vid_path, vid_writer, txt_path = [None] * bs, [None] * bs, [None] * bs
     model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
-
+    s = ''
     # Create as many strong sort instances as there are video sources
     tracker_list = []
     for i in range(bs):
@@ -150,10 +158,11 @@ def run(
     #model.warmup(imgsz=(1 if pt else bs, 3, *imgsz))  # warmup
     seen, windows, dt = 0, [], (Profile(), Profile(), Profile(), Profile())
     curr_frames, prev_frames = [None] * bs, [None] * bs
-    t_s = time.time()
-
+    
     for frame_idx, batch in enumerate(dataset):
+         
         path, im, im0s, vid_cap, s = batch
+        return_dict['img'] = im0s[0]
         visualize = increment_path(save_dir / Path(path[0]).stem, mkdir=True) if visualize else False
         with dt[0]:
             im = torch.from_numpy(im).to(device)
@@ -175,17 +184,17 @@ def run(
             else:
                 p = non_max_suppression(preds, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
             
-        # Process detections
+        # # Process detections
         for i, det in enumerate(p):  # detections per image
             seen += 1
             if webcam:  # bs >= 1
-                p, im0, _ = path[i], im0s[i].copy(), dataset.count
+                p, im0, _ = path[i], im0s[i].copy(), None
                 p = Path(p)  # to Path
                 s += f'{i}: '
                 txt_file_name = p.name
                 save_path = str(save_dir / p.name)  # im.jpg, vid.mp4, ...
             else:
-                p, im0, _ = path, im0s.copy(), getattr(dataset, 'frame', 0)
+                p, im0, _ = path, im0s.copy(), None
                 p = Path(p)  # to Path
                 # video file
                 if source.endswith(VID_FORMATS):
@@ -228,8 +237,6 @@ def run(
                 # pass detections to strongsort
                 with dt[3]:
                     outputs[i] = tracker_list[i].update(det.cpu(), im0)
-                    
-            for j, (output) in enumerate(outputs[i]):
                 
                 # draw boxes for visualization
                 if len(outputs[i]) > 0:
@@ -253,8 +260,12 @@ def run(
                         
                         bbox_dict[id].append(bbox.copy())
                         res_box = ndimage.gaussian_filter1d(bbox_dict[id], 10, axis=0, mode="mirror")
-                        output[:4] = res_box[-1]
-                        tracking_res.append(output)
+                        output[:4] = res_box[-1].copy() # Visualization
+                        output_copy = output.copy() # sending
+                        res_box[:, 2] = res_box[:, 2] - res_box[:, 0]
+                        res_box[:, 3] = res_box[:, 3] - res_box[:, 1]
+                        output_copy[:4] = res_box[-1]
+                        tracking_res.append(output_copy)
                         
                         if save_vid or save_crop or show_vid:  # Add bbox/seg to image
                             c = int(cls)  # integer class
@@ -272,6 +283,10 @@ def run(
                                 save_one_box(np.array(bbox, dtype=np.int16), imc, file=save_dir / 'crops' / txt_file_name / names[c] / f'{id}' / f'{p.stem}.jpg', BGR=True)
                     tracking_res = sorted(tracking_res, key = lambda x: x[4])
                     tracking_res = np.array(tracking_res)
+                    
+                    if len(tracking_res) > 0:
+                        return_dict['detections'] = tracking_res ## ZL: jinjecging detections
+
             else:
                 pass
                 #tracker_list[i].tracker.pred_n_update_all_tracks()
@@ -283,34 +298,23 @@ def run(
                     windows.append(p)
                     cv2.namedWindow(str(p), cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
                     cv2.resizeWindow(str(p), im0.shape[1], im0.shape[0])
+                    
+                if "j2d" in return_dict:
+                    j2d = return_dict['j2d']
+                    for pt in j2d.reshape(-1, 2):
+                        x, y = pt
+                        im0 = cv2.circle(im0, (int(x), int(y)), 3, (255, 136, 132), 3)
                 cv2.imshow(str(p), im0)
-                if cv2.waitKey(1) == ord('q'):  # 1 millisecond
-                    exit()
-
-            # Save results (image with detections)
-            if save_vid:
-                if vid_path[i] != save_path:  # new video
-                    vid_path[i] = save_path
-                    if isinstance(vid_writer[i], cv2.VideoWriter):
-                        vid_writer[i].release()  # release previous video writer
-                    if vid_cap:  # video
-                        fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                        w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    else:  # stream
-                        fps, w, h = 30, im0.shape[1], im0.shape[0]
-                    save_path = str(Path(save_path).with_suffix('.mp4'))  # force *.mp4 suffix on results videos
-                    vid_writer[i] = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                vid_writer[i].write(im0)
+                return_dict['img_show'] = im0 ## ZL: jinjecging image 
+                    
+                
+            if cv2.waitKey(1) == ord('q'):  # 1 millisecond
+                exit()
 
             prev_frames[i] = curr_frames[i]
             
         # Print total time (preprocessing + inference + NMS + tracking)
         # LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{sum([dt.dt for dt in dt if hasattr(dt, 'dt')]) * 1E3:.1f}ms")
-        dt_time = time.time() - t_s
-        t_s = time.time()
-        print(f'\r {1/dt_time:.2f} fps', end='')
-        
 
     # Print results
     t = tuple(x.t / seen * 1E3 for x in dt)  # speeds per image
@@ -320,7 +324,6 @@ def run(
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(yolo_weights)  # update model (to fix SourceChangeWarning)
-    
 
 
 def parse_opt():
