@@ -4,6 +4,7 @@
 __pycache__/
 output/
 node_modules/
+semantic/
 mdm/
 # experiment results
 runs/
