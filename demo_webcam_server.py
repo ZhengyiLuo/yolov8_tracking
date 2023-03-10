@@ -86,7 +86,7 @@ async def main():
                 # camera = poseviz.Camera.from_fov(55, frame.shape[:2])
                 # viz.update(frame, pred['boxes'], pred['poses3d'], camera)
                 pred_j3d = pred['poses3d'].numpy()
-                num_ppl = pred_j3d.shape[0]
+                num_ppl = min(pred_j3d.shape[0], 5)
                 
                 j3d_curr = pred_j3d[:num_ppl]/1000
                 if num_ppl < 5:
@@ -96,10 +96,10 @@ async def main():
                 t_s = time.time()
                 
                 if reset_offset:
-                    offset[:num_ppl] = - offset_height - j3d_curr[:, [0], 1]
+                    offset[:num_ppl] = - offset_height - j3d_curr[:num_ppl, [0], 1]
                     reset_offset = False
                 
-                j3d_curr[..., 1] += offset[:num_ppl]
+                j3d_curr[:offset.shape[0], ..., 1] += offset[:num_ppl]
                 
                 j3d = j3d.copy() # Trying to handle race condition
                 j3d[:num_ppl] = j3d_curr
@@ -220,12 +220,14 @@ async def talk_websocket_handler(request):
                 print(f"----------------> recording: {recording}")
                 # if recording:
                     # pass
-                # if recording and not sim_talker is None:
-                    # await sim_talker.send_json({"action": "start_record"})
+                if recording and not sim_talker is None:
+                    await sim_talker.send_json({"action": "start_record"})
             elif msg.data.startswith("e"):
                 recording = False
                 tracking_res['recording'] =  False
                 print(f"----------------> recording: {recording}")
+                if not recording and not sim_talker is None:
+                    await sim_talker.send_json({"action": "end_record"})
 
             elif msg.data.startswith("w"):
                 curr_date_time = datetime.now().strftime('%Y-%m-%d-%H:%M:%S')

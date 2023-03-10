@@ -1,6 +1,6 @@
 import numpy as np
 import scipy
-import lap
+# import lap
 from scipy.spatial.distance import cdist
 
 from trackers.botsort import kalman_filter

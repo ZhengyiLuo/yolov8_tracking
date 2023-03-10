@@ -3,6 +3,8 @@
 # interpreter bytecode
 __pycache__/
 output/
+node_modules/
+mdm/
 # experiment results
 runs/
 videos/

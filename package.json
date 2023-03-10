@@ -1,0 +1,23 @@
+{
+  "name": "phc_talker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZhengyiLuo/yolov8_tracking.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ZhengyiLuo/yolov8_tracking/issues"
+  },
+  "homepage": "https://github.com/ZhengyiLuo/yolov8_tracking#readme",
+  "dependencies": {
+    "fomantic-ui": "^2.9.2",
+    "paper": "^0.12.17"
+  }
+}
