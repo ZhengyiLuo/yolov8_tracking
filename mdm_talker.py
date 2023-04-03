@@ -115,11 +115,11 @@ class MDMTalker:
 
     def generate_text(self, text, out_path = "mdm_out", num_repetitions = 1):
         curr_date_time = datetime.now().strftime('%Y-%m-%d-%H:%M:%S')
-        out_path = osp.join(out_path, "_".join(text.split(" ")+ [curr_date_time]) )
+        out_path = osp.join(out_path, "_".join([curr_date_time] + text[0].split(" ")) )
         os.makedirs(out_path, exist_ok=True)
         
         args, model_kwargs, model, diffusion, data= self.args, self.model_kwargs, self.model, self.diffusion, self.data
-        model_kwargs['y']['text'] = [text]
+        model_kwargs['y']['text'] = text
         
         fps = 12.5 if args.dataset == 'kit' else 20
         
@@ -128,20 +128,21 @@ class MDMTalker:
         all_text = []
         
         total_num_samples  = self.n_frames * num_repetitions
+        batch_size = num_samples= len(text)
 
         for rep_i in range(num_repetitions):
             print(f'### Sampling [repetitions #{rep_i}]')
 
             # add CFG scale to batch
             if args.guidance_param != 1:
-                model_kwargs['y']['scale'] = torch.ones(args.batch_size, device=dist_util.dev()) * args.guidance_param
+                model_kwargs['y']['scale'] = torch.ones(batch_size, device=dist_util.dev()) * args.guidance_param
 
             sample_fn = diffusion.p_sample_loop
             
 
             sample = sample_fn(
                 model,
-                (args.batch_size, model.njoints, model.nfeats, self.n_frames),
+                (batch_size, model.njoints, model.nfeats, self.n_frames),
                 clip_denoised=False,
                 model_kwargs=model_kwargs,
                 skip_timesteps=0,  # 0 is the default value - i.e. don't skip any step
@@ -181,6 +182,7 @@ class MDMTalker:
         all_motions = np.concatenate(all_motions, axis=0)
         all_motions = all_motions[:total_num_samples]  # [bs, njoints, 6, seqlen]
         all_text = all_text[:total_num_samples]
+        all_lengths = all_lengths * batch_size
         all_lengths = np.concatenate(all_lengths, axis=0)[:total_num_samples]
 
         if os.path.exists(out_path):
@@ -200,11 +202,10 @@ class MDMTalker:
 
         sample_files = []
         num_samples_in_out_file = 7
-
         sample_print_template, row_print_template, all_print_template, \
         sample_file_template, row_file_template, all_file_template = construct_template_variables(args.unconstrained)
-
-        for sample_i in range(args.num_samples):
+        
+        for sample_i in range(num_samples):
             rep_files = []
             for rep_i in range(num_repetitions):
                 caption = all_text[rep_i*args.batch_size + sample_i]
@@ -221,21 +222,22 @@ class MDMTalker:
             #                                     row_print_template, all_print_template, row_file_template, all_file_template,
             #                                     caption, num_samples_in_out_file, rep_files, sample_files, sample_i)
         abs_path = os.path.abspath(out_path)
-        print(f'[Done] Results are at [{abs_path}]')
+        # print(f'[Done] Results are at [{abs_path}]')
+        print(f'[Done] Results are saved!')
         
         ##### Convert to full SMPL
         hand_len = 0.08824
-        mdm_jts = all_motions.transpose(0, 3, 1, 2).reshape(-1, 22, 3)
+        mdm_jts = all_motions.transpose(0, 3, 1, 2).reshape(batch_size, -1, 22, 3)
         
-        direction = (mdm_jts[:, -2] - mdm_jts[:, -4])
-        left = mdm_jts[:, -2] + direction/np.linalg.norm(direction) * hand_len
-        direction = (mdm_jts[:, -1] - mdm_jts[:, -3])
-        right = mdm_jts[:, -1] + direction/np.linalg.norm(direction) * hand_len
-        mdm_jts_smpl_24 = np.concatenate([mdm_jts, left[:, None], right[:, None]], axis = 1)
-        
+        direction = (mdm_jts[...,  -2, :] - mdm_jts[...,  -4, :])
+        left = mdm_jts[...,  -2, :] + direction/np.linalg.norm(direction) * hand_len
+        direction = (mdm_jts[...,  -1, :] - mdm_jts[...,  -3, :])
+        right = mdm_jts[...,  -1, :] + direction/np.linalg.norm(direction) * hand_len
+        mdm_jts_smpl_24 = np.concatenate([mdm_jts, left[...,  None, :], right[..., None, :]], axis = -2)
+        sys.stdout.flush()
         return mdm_jts_smpl_24, abs_path
 
 
 if __name__ == "__main__":
     mdm_talker = MDMTalker()
-    mdm_talker.generate_text("Running round")
+    mdm_talker.generate_text(["Running round", "Jumping"])

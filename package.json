@@ -18,6 +18,7 @@
   "homepage": "https://github.com/ZhengyiLuo/yolov8_tracking#readme",
   "dependencies": {
     "fomantic-ui": "^2.9.2",
-    "paper": "^0.12.17"
+    "paper": "^0.12.17",
+    "xterm": "^5.1.0"
   }
 }

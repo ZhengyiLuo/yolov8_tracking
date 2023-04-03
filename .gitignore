@@ -6,6 +6,7 @@ output/
 node_modules/
 semantic/
 mdm/
+mdm_out/
 # experiment results
 runs/
 videos/

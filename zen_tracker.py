@@ -46,6 +46,7 @@ import scipy.ndimage.filters as filters
 from collections import defaultdict
 from collections import deque
 from ultralytics.yolo.data.augment import LetterBox
+import time
 
 @torch.no_grad()
 def run(
@@ -160,159 +161,161 @@ def run(
     curr_frames, prev_frames = [None] * bs, [None] * bs
     
     for frame_idx, batch in enumerate(dataset):
-         
         path, im, im0s, vid_cap, s = batch
-        return_dict['img'] = im0s[0]
-        visualize = increment_path(save_dir / Path(path[0]).stem, mkdir=True) if visualize else False
-        with dt[0]:
-            im = torch.from_numpy(im).to(device)
-            im = im.half() if half else im.float()  # uint8 to fp16/32
-            im /= 255.0  # 0 - 255 to 0.0 - 1.0
-            if len(im.shape) == 3:
-                im = im[None]  # expand for batch dim
+        
+        if return_dict['mode'] == "video":
+            visualize = increment_path(save_dir / Path(path[0]).stem, mkdir=True) if visualize else False
+            with dt[0]:
+                im = torch.from_numpy(im).to(device)
+                im = im.half() if half else im.float()  # uint8 to fp16/32
+                im /= 255.0  # 0 - 255 to 0.0 - 1.0
+                if len(im.shape) == 3:
+                    im = im[None]  # expand for batch dim
 
-        # Inference
-        with dt[1]:
-            preds = model(im, augment=augment, visualize=visualize)
+            # Inference
+            with dt[1]:
+                preds = model(im, augment=augment, visualize=visualize)
 
-        # Apply NMS
-        with dt[2]:
-            if is_seg:
-                masks = []
-                p = non_max_suppression(preds[0], conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det, nm=32)
-                proto = preds[1][-1]
-            else:
-                p = non_max_suppression(preds, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
-            
-        # # Process detections
-        for i, det in enumerate(p):  # detections per image
-            seen += 1
-            if webcam:  # bs >= 1
-                p, im0, _ = path[i], im0s[i].copy(), None
-                p = Path(p)  # to Path
-                s += f'{i}: '
-                txt_file_name = p.name
-                save_path = str(save_dir / p.name)  # im.jpg, vid.mp4, ...
-            else:
-                p, im0, _ = path, im0s.copy(), None
-                p = Path(p)  # to Path
-                # video file
-                if source.endswith(VID_FORMATS):
-                    txt_file_name = p.stem
-                    save_path = str(save_dir / p.name)  # im.jpg, vid.mp4, ...
-                # folder with imgs
-                else:
-                    txt_file_name = p.parent.name  # get folder name containing current img
-                    save_path = str(save_dir / p.parent.name)  # im.jpg, vid.mp4, ...
-            curr_frames[i] = im0
-
-            txt_path = str(save_dir / 'tracks' / txt_file_name)  # im.txt
-            s += '%gx%g ' % im.shape[2:]  # print string
-            imc = im0.copy() if save_crop else im0  # for save_crop
-
-            annotator = Annotator(im0, line_width=line_thickness, example=str(names))
-            
-            if hasattr(tracker_list[i], 'tracker') and hasattr(tracker_list[i].tracker, 'camera_update'):
-                if prev_frames[i] is not None and curr_frames[i] is not None:  # camera motion compensation
-                    tracker_list[i].tracker.camera_update(prev_frames[i], curr_frames[i])
-
-            if det is not None and len(det):
+            # Apply NMS
+            with dt[2]:
                 if is_seg:
-                    shape = im0.shape
-                    # scale bbox first the crop masks
-                    if retina_masks:
-                        det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], shape).round()  # rescale boxes to im0 size
-                        masks.append(process_mask_native(proto[i], det[:, 6:], det[:, :4], im0.shape[:2]))  # HWC
-                    else:
-                        masks.append(process_mask(proto[i], det[:, 6:], det[:, :4], im.shape[2:], upsample=True))  # HWC
-                        det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], shape).round()  # rescale boxes to im0 size
+                    masks = []
+                    p = non_max_suppression(preds[0], conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det, nm=32)
+                    proto = preds[1][-1]
                 else:
-                    det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()  # rescale boxes to im0 size
-
-                # Print results
-                for c in det[:, 5].unique():
-                    n = (det[:, 5] == c).sum()  # detections per class
-                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
-
-                # pass detections to strongsort
-                with dt[3]:
-                    outputs[i] = tracker_list[i].update(det.cpu(), im0)
+                    p = non_max_suppression(preds, conf_thres, iou_thres, classes, agnostic_nms, max_det=max_det)
                 
-                # draw boxes for visualization
-                if len(outputs[i]) > 0:
-                    
+            # # Process detections
+            for i, det in enumerate(p):  # detections per image
+                seen += 1
+                if webcam:  # bs >= 1
+                    p, im0, _ = path[i], im0s[i].copy(), None
+                    p = Path(p)  # to Path
+                    s += f'{i}: '
+                    txt_file_name = p.name
+                    save_path = str(save_dir / p.name)  # im.jpg, vid.mp4, ...
+                else:
+                    p, im0, _ = path, im0s.copy(), None
+                    p = Path(p)  # to Path
+                    # video file
+                    if source.endswith(VID_FORMATS):
+                        txt_file_name = p.stem
+                        save_path = str(save_dir / p.name)  # im.jpg, vid.mp4, ...
+                    # folder with imgs
+                    else:
+                        txt_file_name = p.parent.name  # get folder name containing current img
+                        save_path = str(save_dir / p.parent.name)  # im.jpg, vid.mp4, ...
+                curr_frames[i] = im0
+
+                txt_path = str(save_dir / 'tracks' / txt_file_name)  # im.txt
+                s += '%gx%g ' % im.shape[2:]  # print string
+                imc = im0.copy() if save_crop else im0  # for save_crop
+
+                annotator = Annotator(im0, line_width=line_thickness, example=str(names))
+                
+                if hasattr(tracker_list[i], 'tracker') and hasattr(tracker_list[i].tracker, 'camera_update'):
+                    if prev_frames[i] is not None and curr_frames[i] is not None:  # camera motion compensation
+                        tracker_list[i].tracker.camera_update(prev_frames[i], curr_frames[i])
+
+                if det is not None and len(det):
                     if is_seg:
-                        # Mask plotting
-                        annotator.masks(
-                            masks[i],
-                            colors=[colors(x, True) for x in det[:, 5]],
-                            im_gpu=torch.as_tensor(im0, dtype=torch.float16).to(device).permute(2, 0, 1).flip(0).contiguous() /
-                            255 if retina_masks else im[i]
-                        )
+                        shape = im0.shape
+                        # scale bbox first the crop masks
+                        if retina_masks:
+                            det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], shape).round()  # rescale boxes to im0 size
+                            masks.append(process_mask_native(proto[i], det[:, 6:], det[:, :4], im0.shape[:2]))  # HWC
+                        else:
+                            masks.append(process_mask(proto[i], det[:, 6:], det[:, :4], im.shape[2:], upsample=True))  # HWC
+                            det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], shape).round()  # rescale boxes to im0 size
+                    else:
+                        det[:, :4] = scale_boxes(im.shape[2:], det[:, :4], im0.shape).round()  # rescale boxes to im0 size
+
+                    # Print results
+                    for c in det[:, 5].unique():
+                        n = (det[:, 5] == c).sum()  # detections per class
+                        s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
+
+                    # pass detections to strongsort
+                    with dt[3]:
+                        outputs[i] = tracker_list[i].update(det.cpu(), im0)
                     
-                    tracking_res = []
-                    for j, (output) in enumerate(outputs[i]):
+                    # draw boxes for visualization
+                    if len(outputs[i]) > 0:
                         
-                        bbox = output[0:4]
-                        id = output[4]
-                        cls = output[5]
-                        conf = output[6]
+                        if is_seg:
+                            # Mask plotting
+                            annotator.masks(
+                                masks[i],
+                                colors=[colors(x, True) for x in det[:, 5]],
+                                im_gpu=torch.as_tensor(im0, dtype=torch.float16).to(device).permute(2, 0, 1).flip(0).contiguous() /
+                                255 if retina_masks else im[i]
+                            )
                         
-                        bbox_dict[id].append(bbox.copy())
-                        res_box = ndimage.gaussian_filter1d(bbox_dict[id], 10, axis=0, mode="mirror")
-                        output[:4] = res_box[-1].copy() # Visualization
-                        output_copy = output.copy() # sending
-                        res_box[:, 2] = res_box[:, 2] - res_box[:, 0]
-                        res_box[:, 3] = res_box[:, 3] - res_box[:, 1]
-                        output_copy[:4] = res_box[-1]
-                        tracking_res.append(output_copy)
-                        
-                        if save_vid or save_crop or show_vid:  # Add bbox/seg to image
-                            c = int(cls)  # integer class
-                            id = int(id)  # integer id
-                            label = None if hide_labels else (f'{id} {names[c]}' if hide_conf else \
-                                (f'{id} {conf:.2f}' if hide_class else f'{id} {names[c]} {conf:.2f}'))
-                            color = colors(c, True)
-                            annotator.box_label(bbox, label, color=color)
+                        tracking_res = []
+                        for j, (output) in enumerate(outputs[i]):
                             
-                            if save_trajectories and tracking_method == 'strongsort':
-                                q = output[7]
-                                tracker_list[i].trajectory(im0, q, color=color)
-                            if save_crop:
-                                txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
-                                save_one_box(np.array(bbox, dtype=np.int16), imc, file=save_dir / 'crops' / txt_file_name / names[c] / f'{id}' / f'{p.stem}.jpg', BGR=True)
-                    tracking_res = sorted(tracking_res, key = lambda x: x[4])
-                    tracking_res = np.array(tracking_res)
-                    
-                    if len(tracking_res) > 0:
-                        return_dict['detections'] = tracking_res ## ZL: jinjecging detections
+                            bbox = output[0:4]
+                            id = output[4]
+                            cls = output[5]
+                            conf = output[6]
+                            
+                            bbox_dict[id].append(bbox.copy())
+                            res_box = ndimage.gaussian_filter1d(bbox_dict[id], 10, axis=0, mode="mirror")
+                            output[:4] = res_box[-1].copy() # Visualization
+                            output_copy = output.copy() # sending
+                            res_box[:, 2] = res_box[:, 2] - res_box[:, 0]
+                            res_box[:, 3] = res_box[:, 3] - res_box[:, 1]
+                            output_copy[:4] = res_box[-1]
+                            tracking_res.append(output_copy)
+                            
+                            if save_vid or save_crop or show_vid:  # Add bbox/seg to image
+                                c = int(cls)  # integer class
+                                id = int(id)  # integer id
+                                label = None if hide_labels else (f'{id} {names[c]}' if hide_conf else \
+                                    (f'{id} {conf:.2f}' if hide_class else f'{id} {names[c]} {conf:.2f}'))
+                                color = colors(c, True)
+                                annotator.box_label(bbox, label, color=color)
+                                
+                                if save_trajectories and tracking_method == 'strongsort':
+                                    q = output[7]
+                                    tracker_list[i].trajectory(im0, q, color=color)
+                                if save_crop:
+                                    txt_file_name = txt_file_name if (isinstance(path, list) and len(path) > 1) else ''
+                                    save_one_box(np.array(bbox, dtype=np.int16), imc, file=save_dir / 'crops' / txt_file_name / names[c] / f'{id}' / f'{p.stem}.jpg', BGR=True)
+                        tracking_res = sorted(tracking_res, key = lambda x: x[4])
+                        tracking_res = np.array(tracking_res)
+                        
+                        if len(tracking_res) > 0:
+                            return_dict['detections'] = tracking_res ## ZL: jinjecging detections
+                            return_dict['img'] = im0s[0]
 
-            else:
-                pass
-                #tracker_list[i].tracker.pred_n_update_all_tracks()
-                
-            # Stream results
-            im0 = annotator.result()
-            if show_vid:
-                if platform.system() == 'Linux' and p not in windows:
-                    windows.append(p)
-                    cv2.namedWindow(str(p), cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
-                    cv2.resizeWindow(str(p), im0.shape[1], im0.shape[0])
+                else:
+                    pass
+                    #tracker_list[i].tracker.pred_n_update_all_tracks()
                     
-                if "j2d" in return_dict:
-                    j2d = return_dict['j2d']
-                    for pt in j2d.reshape(-1, 2):
-                        x, y = pt
-                        im0 = cv2.circle(im0, (int(x), int(y)), 3, (255, 136, 132), 3)
-                cv2.imshow(str(p), im0)
-                return_dict['img_show'] = im0 ## ZL: jinjecging image 
+                # Stream results
+                im0 = annotator.result()
+                if show_vid:
+                    if platform.system() == 'Linux' and p not in windows:
+                        windows.append(p)
+                        cv2.namedWindow(str(p), cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+                        cv2.resizeWindow(str(p), im0.shape[1], im0.shape[0])
+                        
+                    if "j2d" in return_dict:
+                        j2d = return_dict['j2d']
+                        for pt in j2d.reshape(-1, 2):
+                            x, y = pt
+                            im0 = cv2.circle(im0, (int(x), int(y)), 3, (255, 136, 132), 3)
+                    cv2.imshow(str(p), im0)
+                    return_dict['img_show'] = im0 ## ZL: jinjecging image 
                     
-                
-            if cv2.waitKey(1) == ord('q'):  # 1 millisecond
-                exit()
+                if cv2.waitKey(1) == ord('q'):  # 1 millisecond
+                    exit()
 
-            prev_frames[i] = curr_frames[i]
-            
+                prev_frames[i] = curr_frames[i]
+        
+        else:
+            time.sleep(1)
         # Print total time (preprocessing + inference + NMS + tracking)
         # LOGGER.info(f"{s}{'' if len(det) else '(no detections), '}{sum([dt.dt for dt in dt if hasattr(dt, 'dt')]) * 1E3:.1f}ms")
 
@@ -334,7 +337,7 @@ def parse_opt():
     parser.add_argument('--tracking-config', type=Path, default=None)
     parser.add_argument('--source', type=str, default='0', help='file/dir/URL/glob, 0 for webcam')  
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[640], help='inference size h,w')
-    parser.add_argument('--conf-thres', type=float, default=0.5, help='confidence threshold')
+    parser.add_argument('--conf-thres', type=float, default=0.75, help='confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.5, help='NMS IoU threshold')
     parser.add_argument('--max-det', type=int, default=1000, help='maximum detections per image')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
